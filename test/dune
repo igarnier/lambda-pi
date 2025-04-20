@@ -1,2 +1,4 @@
 (test
- (name test_lambda_pi))
+ (name test_lambda_pi)
+ (libraries lambda_pi)
+)

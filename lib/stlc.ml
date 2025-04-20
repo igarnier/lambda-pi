@@ -1,3 +1,7 @@
+(** {1 Simply-typed lambda calculus} *)
+
+(** {2 Type definitions} *)
+
 type name = Global of string | Local of int | Quote of int
 
 type kind = Star
@@ -58,22 +62,51 @@ let lam b = Lam b
 
 (** {2 Printers} *)
 
-let pp_kind fmtr Star = Fmt.pf fmtr "*"
+(** {3 Printers: names} *)
 
 let pp_name fmtr = function
   | Global s -> Fmt.pf fmtr "%s" s
   | Local i -> Fmt.pf fmtr "%d" i
   | Quote i -> Fmt.pf fmtr "'%d" i
 
-let rec pp_typ fragile_context fmtr typ =
+(** {3 Printers: types} *)
+
+let pp_kind fmtr Star = Fmt.pf fmtr "*"
+
+let pp_fragile fragile fmtr ppf =
+  if fragile then Fmt.pf fmtr "(%a)" ppf () else ppf fmtr ()
+
+let rec pp_typ_aux fragile fmtr typ =
   match typ with
   | TFree name -> pp_name fmtr name
   | TArrow (dom, range) ->
-      if fragile_context then
-        Fmt.pf fmtr "(%a -> %a)" (pp_typ true) dom (pp_typ false) range
-      else Fmt.pf fmtr "%a -> %a" (pp_typ true) dom (pp_typ false) range
+      pp_fragile fragile fmtr @@ fun fmtr () ->
+      Fmt.pf fmtr "%a -> %a" (pp_typ_aux true) dom (pp_typ_aux false) range
 
-let pp_typ fmtr typ = pp_typ false fmtr typ
+let pp_typ fmtr typ = pp_typ_aux false fmtr typ
+
+(** {3 Printers: terms} *)
+
+let rec pp_inferrable fragile fmtr it =
+  match it with
+  | Annot (ct, ty) ->
+      pp_fragile fragile fmtr @@ fun fmtr () ->
+      Fmt.pf fmtr "%a : %a" (pp_checkable true) ct pp_typ ty
+  | Bound i -> Fmt.pf fmtr "%d" i
+  | Free n -> Fmt.pf fmtr "free(%a)" pp_name n
+  | App (it, ct) ->
+      Fmt.pf fmtr "%a %a" (pp_inferrable true) it (pp_checkable true) ct
+
+and pp_checkable fragile fmtr ct =
+  match ct with
+  | Inf it -> pp_inferrable fragile fmtr it
+  | Lam body ->
+      pp_fragile fragile fmtr @@ fun fmtr () ->
+      Fmt.pf fmtr "λ. %a" (pp_checkable fragile) body
+
+let pp_inferrable fmtr it = pp_inferrable false fmtr it
+
+let pp_checkable fmtr it = pp_checkable false fmtr it
 
 (** {2 Evaluation} *)
 
@@ -165,14 +198,17 @@ and check : int -> context -> checkable_term -> typ -> (unit, string) result =
   match (checkable_term, ty) with
   | (Inf it, _) ->
       let* ty' = infer depth ctxt it in
-      if typ_eq ty ty' then Result.ok () else Result.Error "types not equal"
+      if typ_eq ty ty' then Result.ok ()
+      else Fmt.kstr Result.error "Expected %a, got %a" pp_typ ty pp_typ ty'
   | (Lam ct, TArrow (dom, range)) ->
       check
         (depth + 1)
         ((Local depth, HasType dom) :: ctxt)
         (subst_checkable 0 (Free (Local depth)) ct)
         range
-  | _ -> Result.Error "incorrect type"
+  | _ -> Fmt.kstr Result.error "Incorrect type %a" pp_typ ty
+
+let check0 term typ = check 0 [] term typ
 
 let rec quote_value : int -> value -> checkable_term =
  fun depth value ->
