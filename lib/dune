@@ -1,0 +1,4 @@
+(library
+ (public_name lambda_pi)
+ (name lambda_pi)
+ (libraries fmt))

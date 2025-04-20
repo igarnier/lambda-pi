@@ -1,0 +1,4 @@
+(executable
+ (public_name lambda_pi)
+ (name main)
+ (libraries lambda_pi))
