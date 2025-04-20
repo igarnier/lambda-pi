@@ -26,6 +26,10 @@ and neutral = NFree of name | NApp of neutral * value
 
 type env = value list
 
+(** {2 Helpers} *)
+
+let error format = Fmt.kstr Result.error format
+
 (** {2 Constructors} *)
 
 (** {3 Constructors: names} *)
@@ -46,15 +50,19 @@ let quote_ty i = TFree (quote i)
 
 let arrow_ty dom range = TArrow (dom, range)
 
+let ( @-> ) = arrow_ty
+
 (** {3 Constructors: terms} *)
 
 let annot ct ty = Annot (ct, ty)
 
 let bound i = Bound i
 
-let free n = Free n
+let free s = Inf (Free (Global s))
 
 let app it ct = App (it, ct)
+
+let ( <@ ) = app
 
 let inf it = Inf it
 
@@ -107,6 +115,15 @@ and pp_checkable fragile fmtr ct =
 let pp_inferrable fmtr it = pp_inferrable false fmtr it
 
 let pp_checkable fmtr it = pp_checkable false fmtr it
+
+(** {3 Printers: contexts} *)
+
+let pp_info fmtr info =
+  match info with
+  | HasKind Star -> pp_kind fmtr Star
+  | HasType ty -> pp_typ fmtr ty
+
+let pp_context : context Fmt.t = Fmt.Dump.(list (pair pp_name pp_info))
 
 (** {2 Evaluation} *)
 
@@ -166,9 +183,11 @@ let rec type_wf : context -> typ -> (unit, string) result =
  fun ctxt typ ->
   match typ with
   | TFree n -> (
-      match List.assoc n ctxt with
-      | HasKind Star -> Result.ok ()
-      | HasType _ -> Result.Error "ill-formed type")
+      match List.assoc_opt n ctxt with
+      | Some (HasKind Star) -> Result.ok ()
+      | Some (HasType _ as info) ->
+          error "type_wf: %a has wrong kind %a" pp_name n pp_info info
+      | None -> error "type_wf: %a not found in %a" pp_name n pp_context ctxt)
   | TArrow (dom, range) ->
       let* () = type_wf ctxt dom in
       type_wf ctxt range
@@ -180,18 +199,21 @@ let rec infer : int -> context -> inferrable_term -> (typ, string) result =
       let* () = type_wf ctxt ty in
       let* () = check depth ctxt checkable_term ty in
       Result.ok ty
-  | Bound _ -> Error "unexpected bound variable"
+  | Bound _ -> error "infer: unexpected bound variable"
   | Free n -> (
-      match List.assoc n ctxt with
-      | HasType ty -> Result.ok ty
-      | HasKind _ -> Error "")
+      match List.assoc_opt n ctxt with
+      | Some (HasType ty) -> Result.ok ty
+      | Some (HasKind _) ->
+          error "%a is expected to have a type but instead has kind *" pp_name n
+      | None ->
+          error "infer: %a not found in context %a" pp_name n pp_context ctxt)
   | App (it, ct) -> (
       let* fty = infer depth ctxt it in
       match fty with
       | TArrow (dom, range) ->
           let* () = check depth ctxt ct dom in
           Result.ok range
-      | _ -> Error "inferred type in function argument is not an arrow")
+      | _ -> error "infer: expected arrow type, got %a" pp_typ fty)
 
 and check : int -> context -> checkable_term -> typ -> (unit, string) result =
  fun depth ctxt checkable_term ty ->
@@ -199,14 +221,14 @@ and check : int -> context -> checkable_term -> typ -> (unit, string) result =
   | (Inf it, _) ->
       let* ty' = infer depth ctxt it in
       if typ_eq ty ty' then Result.ok ()
-      else Fmt.kstr Result.error "Expected %a, got %a" pp_typ ty pp_typ ty'
+      else error "Expected %a, got %a" pp_typ ty pp_typ ty'
   | (Lam ct, TArrow (dom, range)) ->
       check
         (depth + 1)
         ((Local depth, HasType dom) :: ctxt)
         (subst_checkable 0 (Free (Local depth)) ct)
         range
-  | _ -> Fmt.kstr Result.error "Incorrect type %a" pp_typ ty
+  | _ -> error "Incorrect type %a" pp_typ ty
 
 let check0 term typ = check 0 [] term typ
 
@@ -219,6 +241,6 @@ let rec quote_value : int -> value -> checkable_term =
 and quote_neutral : int -> neutral -> inferrable_term =
  fun depth neutral ->
   match neutral with
-  | NFree (Quote i) -> Bound (depth - i + 1)
+  | NFree (Quote i) -> Bound (depth - i - 1)
   | NFree n -> Free n
   | NApp (n, v) -> App (quote_neutral depth n, quote_value depth v)
