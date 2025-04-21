@@ -26,3 +26,5 @@ let () =
 let () = assert (infer 0 env1 term1 = Ok (global_ty "a"))
 
 let () = assert (infer 0 env2 term2 = Ok (global_ty "b" @-> global_ty "b"))
+
+open Lambda_pi.DTT

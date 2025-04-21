@@ -12,7 +12,7 @@ type info = HasKind of kind | HasType of typ
 
 type context = (name * info) list
 
-and inferrable_term =
+type inferrable_term =
   | Annot of checkable_term * typ
   | Bound of int
   | Free of name
