@@ -9,7 +9,7 @@ type name =
 
 type kind = Star
 
-type typ = TInt | TArrow of typ * typ
+type typ = TInt | TArrow of typ * typ | TCode of typ
 
 type info = HasKind of kind | HasType of typ
 
@@ -96,6 +96,7 @@ let rec pp_typ_aux fragile fmtr typ =
   | TArrow (dom, range) ->
       pp_fragile fragile fmtr @@ fun fmtr () ->
       Fmt.pf fmtr "%a -> %a" (pp_typ_aux true) dom (pp_typ_aux false) range
+  | TCode ty -> Fmt.pf fmtr "code %a" (pp_typ_aux true) ty
 
 let pp_typ fmtr typ = pp_typ_aux false fmtr typ
 
@@ -198,6 +199,7 @@ let rec type_wf : context -> typ -> (unit, string) result =
   | TArrow (dom, range) ->
       let* () = type_wf ctxt dom in
       type_wf ctxt range
+  | TCode ty -> type_wf ctxt ty
 
 let rec infer : int -> context -> inferrable_term -> (typ, string) result =
  fun depth ctxt inferrable_term ->
