@@ -20,10 +20,11 @@ type inferrable_term =
   | Bound of int
   | Free of name
   | App of inferrable_term * checkable_term
+  | Int of int
 
 and checkable_term = Inf of inferrable_term | Lam of checkable_term
 
-type value = VNeutral of neutral | VLam of (value -> value)
+type value = VNeutral of neutral | VLam of (value -> value) | VInt of int
 
 and neutral = NFree of name | NApp of neutral * value
 
@@ -109,6 +110,7 @@ let rec pp_inferrable fragile fmtr it =
   | Free n -> Fmt.pf fmtr "free(%a)" pp_name n
   | App (it, ct) ->
       Fmt.pf fmtr "%a %a" (pp_inferrable true) it (pp_checkable true) ct
+  | Int i -> Fmt.pf fmtr "%d" i
 
 and pp_checkable fragile fmtr ct =
   match ct with
@@ -133,7 +135,10 @@ let pp_context : context Fmt.t = Fmt.Dump.(list (pair pp_name pp_info))
 (** {2 Evaluation} *)
 
 let vapp (vf : value) (varg : value) =
-  match vf with VLam f -> f varg | VNeutral n -> VNeutral (NApp (n, varg))
+  match vf with
+  | VLam f -> f varg
+  | VNeutral n -> VNeutral (NApp (n, varg))
+  | VInt _ -> failwith "vapp: expected a function, got integer"
 
 let rec eval_inferrable : inferrable_term -> value list -> value =
  fun inferrable_term env ->
@@ -142,6 +147,7 @@ let rec eval_inferrable : inferrable_term -> value list -> value =
   | Bound i -> List.nth env i
   | Free n -> VNeutral (NFree n)
   | App (it, ct) -> vapp (eval_inferrable it env) (eval_checkable ct env)
+  | Int i -> VInt i
 
 and eval_checkable : checkable_term -> value list -> value =
  fun checkable_term env ->
@@ -183,6 +189,7 @@ and subst_inferrable :
   | Bound j -> if i = j then name else it
   | Free _ -> it
   | App (it, ct) -> App (subst_inferrable i name it, subst_checkable i name ct)
+  | Int _ -> it
 
 let rec type_wf : context -> typ -> (unit, string) result =
  fun ctxt typ ->
@@ -214,6 +221,7 @@ let rec infer : int -> context -> inferrable_term -> (typ, string) result =
           let* () = check depth ctxt ct dom in
           Result.ok range
       | _ -> error "infer: expected arrow type, got %a" pp_typ fty)
+  | Int _ -> Result.ok TInt
 
 and check : int -> context -> checkable_term -> typ -> (unit, string) result =
  fun depth ctxt checkable_term ty ->
@@ -237,6 +245,7 @@ let rec quote_value : int -> value -> checkable_term =
   match value with
   | VNeutral n -> Inf (quote_neutral depth n)
   | VLam f -> Lam (quote_value (depth + 1) (f (VNeutral (NFree (Quote depth)))))
+  | VInt i -> Inf (Int i)
 
 and quote_neutral : int -> neutral -> inferrable_term =
  fun depth neutral ->
