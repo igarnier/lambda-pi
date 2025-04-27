@@ -2,7 +2,10 @@
 
 (** {2 Type definitions} *)
 
-type name = Global of string | Local of int | Quote of int
+type name =
+  | Global of string
+  | Local of int
+  | Quote of int  (** Used when interpreting values as terms *)
 
 type kind = Star
 
