@@ -9,7 +9,7 @@ type name =
 
 type kind = Star
 
-type typ = TFree of name | TArrow of typ * typ
+type typ = TInt | TArrow of typ * typ
 
 type info = HasKind of kind | HasType of typ
 
@@ -45,11 +45,13 @@ let quote i = Quote i
 
 (** {3 Constructors: types} *)
 
-let global_ty n = TFree (global n)
+(* let global_ty n = TFree (global n) *)
 
-let local_ty i = TFree (local i)
+(* let local_ty i = TFree (local i) *)
 
-let quote_ty i = TFree (quote i)
+(* let quote_ty i = TFree (quote i) *)
+
+let int_ty = TInt
 
 let arrow_ty dom range = TArrow (dom, range)
 
@@ -89,7 +91,7 @@ let pp_fragile fragile fmtr ppf =
 
 let rec pp_typ_aux fragile fmtr typ =
   match typ with
-  | TFree name -> pp_name fmtr name
+  | TInt -> Fmt.pf fmtr "int"
   | TArrow (dom, range) ->
       pp_fragile fragile fmtr @@ fun fmtr () ->
       Fmt.pf fmtr "%a -> %a" (pp_typ_aux true) dom (pp_typ_aux false) range
@@ -162,7 +164,7 @@ let kind_eq Star Star = true
 
 let rec typ_eq ty1 ty2 =
   match (ty1, ty2) with
-  | (TFree n1, TFree n2) -> name_eq n1 n2
+  | (TInt, TInt) -> true
   | (TArrow (d1, r1), TArrow (d2, r2)) -> typ_eq d1 d2 && typ_eq r1 r2
   | _ -> false
 
@@ -185,12 +187,7 @@ and subst_inferrable :
 let rec type_wf : context -> typ -> (unit, string) result =
  fun ctxt typ ->
   match typ with
-  | TFree n -> (
-      match List.assoc_opt n ctxt with
-      | Some (HasKind Star) -> Result.ok ()
-      | Some (HasType _ as info) ->
-          error "type_wf: %a has wrong kind %a" pp_name n pp_info info
-      | None -> error "type_wf: %a not found in %a" pp_name n pp_context ctxt)
+  | TInt -> Result.ok ()
   | TArrow (dom, range) ->
       let* () = type_wf ctxt dom in
       type_wf ctxt range
