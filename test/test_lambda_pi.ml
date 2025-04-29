@@ -33,12 +33,12 @@ let expected_eta_type =
   (code int_ty @-> code int_ty) @-> code (int_ty @-> int_ty)
 
 let () =
-  match check 0 [] eta expected_eta_type with
-  | Ok () -> Format.printf "success"
+  match check ~depth:0 [] eta expected_eta_type with
+  | Ok () -> Format.printf "typechecking: success\n"
   | Error msg -> failwith msg
 
 let test = app (annot eta expected_eta_type) (lam (bracket (inf (bound 0))))
 
-let res = eval_inferrable ~stage:0 test []
+let res = eval_inferrable test []
 
 let () = quote_value 0 res |> Format.printf "%a" pp_checkable

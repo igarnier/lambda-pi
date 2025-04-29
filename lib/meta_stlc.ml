@@ -13,7 +13,9 @@ type typ = TInt | TArrow of typ * typ | TCode of typ
 
 type info = HasKind of kind | HasType of typ
 
-type context = (name * info) list
+type binding = { name : name; info : info }
+
+type context = binding list
 
 type inferrable_term =
   | Annot of checkable_term * typ
@@ -151,7 +153,10 @@ let pp_info fmtr info =
   | HasKind Star -> pp_kind fmtr Star
   | HasType ty -> pp_typ fmtr ty
 
-let pp_context : context Fmt.t = Fmt.Dump.(list (pair pp_name pp_info))
+let pp_binding : binding Fmt.t =
+  Fmt.using (fun { name; info } -> (name, info)) Fmt.Dump.(pair pp_name pp_info)
+
+let pp_context : context Fmt.t = Fmt.Dump.(list pp_binding)
 
 (** {2 Quoting values} *)
 
@@ -178,53 +183,26 @@ let vapp (vf : value) (varg : value) =
   | VNeutral n -> VNeutral (NApp (n, varg))
   | _ -> failwith "vapp: expected a function"
 
-let rec eval_inferrable : stage:int -> inferrable_term -> value list -> value =
- fun ~stage inferrable_term env ->
+let rec eval_inferrable : inferrable_term -> value list -> value =
+ fun inferrable_term env ->
   match inferrable_term with
-  | Annot (checkable_term, _) -> eval_checkable ~stage checkable_term env
+  | Annot (checkable_term, _) -> eval_checkable checkable_term env
   | Bound i -> List.nth env i
   | Free n -> VNeutral (NFree n)
-  | App (it, ct) ->
-      if stage = 0 then
-        vapp (eval_inferrable ~stage it env) (eval_checkable ~stage ct env)
-      else assert false
+  | App (it, ct) -> vapp (eval_inferrable it env) (eval_checkable ct env)
   | Int i -> VInt i
 
-and eval_checkable : stage:int -> checkable_term -> value list -> value =
- fun ~stage checkable_term env ->
+and eval_checkable : checkable_term -> value list -> value =
+ fun checkable_term env ->
   match checkable_term with
-  | Inf it -> eval_inferrable ~stage it env
-  | Lam ct -> VLam (fun v -> eval_checkable ~stage ct (v :: env))
-  | Bracket ct -> (
-      match eval_checkable ~stage:(stage + 1) ct env with
-      | VCode code -> VCode (Bracket code)
-      | v ->
-          Format.kasprintf
-            failwith
-            "While evaluating %a: expected VCode, got %a"
-            pp_checkable
-            checkable_term
-            pp_checkable
-            (quote_value 0 v))
-  | Escape ct -> (
-      if stage = 0 then failwith "Escape at stage 0"
-      else if stage = 1 then
-        match eval_checkable ~stage:0 ct env with
-        | VCode (Bracket ct) -> VCode ct
-        | _ -> failwith "Escape: expected bracket"
-      else
-        match eval_checkable ~stage:(stage - 1) ct env with
-        | VCode ct -> VCode (Escape ct)
-        | _ -> failwith "Escape: expected code")
-  | Eval ct -> (
-      if stage = 0 then
-        match eval_checkable ~stage:0 ct env with
-        | VCode (Bracket ct) -> eval_checkable ~stage:0 ct env
-        | _ -> failwith "Eval: expected bracket"
-      else
-        match eval_checkable ~stage ct env with
-        | VCode ct -> VCode (Eval ct)
-        | _ -> failwith "Escape: expected code")
+  | Inf it -> eval_inferrable it env
+  | Lam ct -> VLam (fun v -> eval_checkable ct (v :: env))
+  | _ ->
+      Format.kasprintf
+        failwith
+        "eval_checkable: expected Inf or Lam, got %a"
+        pp_checkable
+        checkable_term
 
 (** {2 Typechecking} *)
 
@@ -275,46 +253,54 @@ let rec type_wf : context -> typ -> (unit, string) result =
       type_wf ctxt range
   | TCode ty -> type_wf ctxt ty
 
-let rec infer : int -> context -> inferrable_term -> (typ, string) result =
- fun depth ctxt inferrable_term ->
+let context_find : name -> context -> info option =
+ fun n ctxt ->
+  List.find_map
+    (fun { name; info } -> if name_eq n name then Some info else None)
+    ctxt
+
+let rec infer : depth:int -> context -> inferrable_term -> (typ, string) result
+    =
+ fun ~depth ctxt inferrable_term ->
   match inferrable_term with
   | Annot (checkable_term, ty) ->
       let* () = type_wf ctxt ty in
-      let* () = check depth ctxt checkable_term ty in
+      let* () = check ~depth ctxt checkable_term ty in
       Result.ok ty
   | Bound _ -> error "infer: unexpected bound variable"
   | Free n -> (
-      match List.assoc_opt n ctxt with
+      match context_find n ctxt with
       | Some (HasType ty) -> Result.ok ty
       | Some (HasKind _) ->
           error "%a is expected to have a type but instead has kind *" pp_name n
       | None ->
           error "infer: %a not found in context %a" pp_name n pp_context ctxt)
   | App (it, ct) -> (
-      let* fty = infer depth ctxt it in
+      let* fty = infer ~depth ctxt it in
       match fty with
       | TArrow (dom, range) ->
-          let* () = check depth ctxt ct dom in
+          let* () = check ~depth ctxt ct dom in
           Result.ok range
       | _ -> error "infer: expected arrow type, got %a" pp_typ fty)
   | Int _ -> Result.ok TInt
 
-and check : int -> context -> checkable_term -> typ -> (unit, string) result =
- fun depth ctxt checkable_term ty ->
+and check :
+    depth:int -> context -> checkable_term -> typ -> (unit, string) result =
+ fun ~depth ctxt checkable_term ty ->
   match (checkable_term, ty) with
   | (Inf it, _) ->
-      let* ty' = infer depth ctxt it in
+      let* ty' = infer ~depth ctxt it in
       if typ_eq ty ty' then Result.ok ()
       else error "Expected %a, got %a" pp_typ ty pp_typ ty'
   | (Lam ct, TArrow (dom, range)) ->
       check
-        (depth + 1)
-        ((Local depth, HasType dom) :: ctxt)
+        ~depth:(depth + 1)
+        ({ name = Local depth; info = HasType dom } :: ctxt)
         (subst_checkable 0 (Free (Local depth)) ct)
         range
-  | (Bracket ct, TCode ty) -> check depth ctxt ct ty
-  | (Escape ct, ty) -> check depth ctxt ct (TCode ty)
-  | (Eval ct, ty) -> check depth ctxt ct (TCode ty)
+  | (Bracket ct, TCode ty) -> check ~depth ctxt ct ty
+  | (Escape ct, ty) -> check ~depth ctxt ct (TCode ty)
+  | (Eval ct, ty) -> check ~depth ctxt ct (TCode ty)
   | _ -> error "Incorrect type %a" pp_typ ty
 
-let check0 term typ = check 0 [] term typ
+let check0 term typ = check ~depth:0 [] term typ
