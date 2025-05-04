@@ -33,7 +33,7 @@ let expected_eta_type =
   (code int_ty @-> code int_ty) @-> code (int_ty @-> int_ty)
 
 let () =
-  match check ~depth:0 [] eta expected_eta_type with
+  match check ~depth:0 ~stage:0 [] eta expected_eta_type with
   | Ok () -> Format.printf "typechecking: success\n"
   | Error msg -> failwith msg
 

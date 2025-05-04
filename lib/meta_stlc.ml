@@ -13,7 +13,7 @@ type typ = TInt | TArrow of typ * typ | TCode of typ
 
 type info = HasKind of kind | HasType of typ
 
-type binding = { name : name; info : info }
+type binding = { name : name; info : info; stage : int }
 
 type context = binding list
 
@@ -154,7 +154,10 @@ let pp_info fmtr info =
   | HasType ty -> pp_typ fmtr ty
 
 let pp_binding : binding Fmt.t =
-  Fmt.using (fun { name; info } -> (name, info)) Fmt.Dump.(pair pp_name pp_info)
+  let name = Fmt.field "name" (fun r -> r.name) pp_name in
+  let info = Fmt.field "info" (fun r -> r.info) pp_info in
+  let stage = Fmt.field "stage" (fun r -> r.stage) Fmt.int in
+  Fmt.Dump.record [name; info; stage]
 
 let pp_context : context Fmt.t = Fmt.Dump.(list pp_binding)
 
@@ -253,54 +256,68 @@ let rec type_wf : context -> typ -> (unit, string) result =
       type_wf ctxt range
   | TCode ty -> type_wf ctxt ty
 
-let context_find : name -> context -> info option =
+let context_find : name -> context -> (info * int) option =
  fun n ctxt ->
   List.find_map
-    (fun { name; info } -> if name_eq n name then Some info else None)
+    (fun { name; info; stage } ->
+      if name_eq n name then Some (info, stage) else None)
     ctxt
 
-let rec infer : depth:int -> context -> inferrable_term -> (typ, string) result
+let rec infer :
+    depth:int -> stage:int -> context -> inferrable_term -> (typ, string) result
     =
- fun ~depth ctxt inferrable_term ->
+ fun ~depth ~stage ctxt inferrable_term ->
   match inferrable_term with
   | Annot (checkable_term, ty) ->
       let* () = type_wf ctxt ty in
-      let* () = check ~depth ctxt checkable_term ty in
+      let* () = check ~depth ~stage ctxt checkable_term ty in
       Result.ok ty
   | Bound _ -> error "infer: unexpected bound variable"
   | Free n -> (
       match context_find n ctxt with
-      | Some (HasType ty) -> Result.ok ty
-      | Some (HasKind _) ->
+      | Some (HasType ty, def_stage) ->
+          if def_stage <= stage then Result.ok ty
+          else error "%a is not in scope at stage %d" pp_name n stage
+      | Some (HasKind _, _) ->
           error "%a is expected to have a type but instead has kind *" pp_name n
       | None ->
           error "infer: %a not found in context %a" pp_name n pp_context ctxt)
   | App (it, ct) -> (
-      let* fty = infer ~depth ctxt it in
+      let* fty = infer ~depth ~stage ctxt it in
       match fty with
       | TArrow (dom, range) ->
-          let* () = check ~depth ctxt ct dom in
+          let* () = check ~depth ~stage ctxt ct dom in
           Result.ok range
       | _ -> error "infer: expected arrow type, got %a" pp_typ fty)
   | Int _ -> Result.ok TInt
 
 and check :
-    depth:int -> context -> checkable_term -> typ -> (unit, string) result =
- fun ~depth ctxt checkable_term ty ->
+    depth:int ->
+    stage:int ->
+    context ->
+    checkable_term ->
+    typ ->
+    (unit, string) result =
+ fun ~depth ~stage ctxt checkable_term ty ->
   match (checkable_term, ty) with
   | (Inf it, _) ->
-      let* ty' = infer ~depth ctxt it in
+      let* ty' = infer ~depth ~stage ctxt it in
       if typ_eq ty ty' then Result.ok ()
       else error "Expected %a, got %a" pp_typ ty pp_typ ty'
   | (Lam ct, TArrow (dom, range)) ->
       check
         ~depth:(depth + 1)
-        ({ name = Local depth; info = HasType dom } :: ctxt)
+        ~stage
+        ({ name = Local depth; info = HasType dom; stage } :: ctxt)
         (subst_checkable 0 (Free (Local depth)) ct)
         range
-  | (Bracket ct, TCode ty) -> check ~depth ctxt ct ty
-  | (Escape ct, ty) -> check ~depth ctxt ct (TCode ty)
-  | (Eval ct, ty) -> check ~depth ctxt ct (TCode ty)
+  | (Bracket ct, TCode ty) -> check ~depth ~stage:(stage + 1) ctxt ct ty
+  | (Escape ct, ty) ->
+      if stage = 0 then error "Escape is not allowed at stage 0"
+      else check ~depth ~stage:(stage - 1) ctxt ct (TCode ty)
+  | (Eval ct, ty) ->
+      if stage = 0 then check ~depth ~stage ctxt ct (TCode ty)
+      else error "Eval is not allowed at stage %d" stage
   | _ -> error "Incorrect type %a" pp_typ ty
 
 let check0 term typ = check ~depth:0 [] term typ
